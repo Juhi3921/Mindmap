@@ -152,3 +152,200 @@ const PALETTE = [
   '#9f7aea','#38b2ac','#f6ad55','#667eea'
 ];
 
+// ─── State ────────────────────────────────────────────────────────────────────
+let map, selectedId, editingId, undoStack, redoStack, nextId;
+let panX, panY, scale;
+let isPanning = false, panAnchor = null;
+let rootColors = {}; // node id → color index for depth-1 nodes
+
+// ─── Tree helpers ─────────────────────────────────────────────────────────────
+function findNode(id, node = map) {
+  if (node.id === id) return node;
+  for (const c of node.children) {
+    const f = findNode(id, c);
+    if (f) return f;
+  }
+  return null;
+}
+
+function findParent(targetId, node = map) {
+  for (const c of node.children) {
+    if (c.id === targetId) return node;
+    const f = findParent(targetId, c);
+    if (f) return f;
+  }
+  return null;
+}
+
+function siblingIndex(parent, id) {
+  return parent.children.findIndex(c => c.id === id);
+}
+
+function genId() {
+  return 'n' + (++nextId) + '_' + Date.now();
+}
+
+// Returns the depth-1 ancestor id (color group)
+function colorOf(id) {
+  if (id === 'root') return 0;
+  // walk up until we find depth-1 node
+  let cur = id;
+  while (true) {
+    const p = findParent(cur);
+    if (!p) return 0;
+    if (p.id === 'root') break;
+    cur = p.id;
+  }
+  // cur is now depth-1 node id
+  const idx = map.children.findIndex(c => c.id === cur);
+  return idx >= 0 ? idx : 0;
+}
+
+// ─── Layout ───────────────────────────────────────────────────────────────────
+function subtreeH(node) {
+  if (!node.children.length || node.collapsed) {
+    node._sh = NH + VG;
+    return node._sh;
+  }
+  let total = 0;
+  for (const c of node.children) total += subtreeH(c);
+  node._sh = Math.max(total, NH + VG);
+  return node._sh;
+}
+
+function placeNodes(node, x, topY, depth = 0) {
+  node._depth = depth;
+  node._x = x;
+  if (!node.children.length || node.collapsed) {
+    node._y = topY + (node._sh - NH) / 2;
+    return;
+  }
+  let cy = topY;
+  for (const c of node.children) {
+    placeNodes(c, x + HS, cy, depth + 1);
+    cy += c._sh;
+  }
+  const first = node.children[0]._y;
+  const last = node.children[node.children.length - 1]._y;
+  node._y = (first + last + NH) / 2 - NH / 2;
+}
+
+function layout() {
+  subtreeH(map);
+  placeNodes(map, 0, -map._sh / 2 + (NH + VG) / 2);
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────────
+const svg    = document.getElementById('map-svg');
+const vp     = document.getElementById('viewport');
+const linksG = document.getElementById('links');
+const nodesG = document.getElementById('nodes');
+const editor = document.getElementById('node-editor');
+
+function applyViewport() {
+  vp.setAttribute('transform', `translate(${panX},${panY}) scale(${scale})`);
+}
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+function truncate(text, maxPx = NW - 20, fontSize = 14) {
+  // rough estimate: avg char ≈ fontSize * 0.55
+  const avgW = fontSize * 0.55;
+  const max = Math.floor(maxPx / avgW);
+  return text.length <= max ? text : text.slice(0, max - 1) + '…';
+}
+
+function buildNodeEl(node) {
+  const sel = node.id === selectedId;
+  const color = PALETTE[colorOf(node.id) % PALETTE.length];
+  const isRoot = node._depth === 0;
+
+  const g = svgEl('g', { class: 'node', 'data-id': node.id,
+    transform: `translate(${node._x},${node._y})` });
+
+  const rect = svgEl('rect', {
+    width: NW, height: NH, rx: 7, ry: 7,
+    fill: isRoot ? color : '#fff',
+    stroke: sel ? color : (isRoot ? color : '#d8d8d8'),
+    'stroke-width': sel ? 3 : 1.5,
+    filter: sel ? 'url(#sel-shadow)' : 'url(#node-shadow)',
+  });
+
+  const text = svgEl('text', {
+    x: NW / 2, y: NH / 2,
+    'dominant-baseline': 'middle',
+    'text-anchor': 'middle',
+    'font-size': 14,
+    fill: isRoot ? '#fff' : '#2d3748',
+    'font-weight': isRoot ? '600' : '400',
+  });
+  text.textContent = truncate(node.title);
+
+  g.appendChild(rect);
+  g.appendChild(text);
+
+  // Collapse toggle dot
+  if (node.children.length > 0) {
+    const dot = svgEl('circle', {
+      cx: NW, cy: NH / 2, r: 8,
+      fill: color, 'class': 'collapse-dot', style: 'cursor:pointer',
+    });
+    const dotTxt = svgEl('text', {
+      x: NW, y: NH / 2,
+      'dominant-baseline': 'middle', 'text-anchor': 'middle',
+      'font-size': 11, fill: '#fff',
+      style: 'pointer-events:none; user-select:none',
+    });
+    dotTxt.textContent = node.collapsed ? '+' : '−';
+    g.appendChild(dot);
+    g.appendChild(dotTxt);
+  }
+
+  // Events
+  rect.addEventListener('click', e => { e.stopPropagation(); selectNode(node.id); });
+  text.addEventListener('click', e => { e.stopPropagation(); selectNode(node.id); });
+  rect.addEventListener('dblclick', e => { e.stopPropagation(); startEdit(node.id); });
+  text.addEventListener('dblclick', e => { e.stopPropagation(); startEdit(node.id); });
+  g.querySelectorAll('.collapse-dot').forEach(dot =>
+    dot.addEventListener('click', e => { e.stopPropagation(); toggleCollapse(node.id); }));
+
+  return g;
+}
+
+function bezier(n1, n2) {
+  const x1 = n1._x + NW, y1 = n1._y + NH / 2;
+  const x2 = n2._x,       y2 = n2._y + NH / 2;
+  const mx = (x1 + x2) / 2;
+  return `M ${x1} ${y1} C ${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`;
+}
+
+function render() {
+  linksG.innerHTML = '';
+  nodesG.innerHTML = '';
+
+  function traverse(node) {
+    nodesG.appendChild(buildNodeEl(node));
+    if (!node.collapsed) {
+      for (const c of node.children) {
+        const path = svgEl('path', {
+          d: bezier(node, c),
+          fill: 'none',
+          stroke: PALETTE[colorOf(c.id) % PALETTE.length],
+          'stroke-width': 2.5,
+          opacity: 0.4,
+        });
+        linksG.appendChild(path);
+        traverse(c);
+      }
+    }
+  }
+
+  traverse(map);
+  applyViewport();
+  if (editingId) repositionEditor(editingId);
+}
+
