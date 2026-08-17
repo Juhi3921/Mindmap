@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MindMap</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #000000;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+#toolbar {
+  background: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+#toolbar h1 {
+  font-size: 17px;
+  font-weight: 700;
+  color: #2d3748;
+  margin-right: 4px;
+}
+
+.btn {
+  padding: 5px 12px;
+  border: 1px solid #d0d0d0;
+  border-radius: 5px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  color: #444;
+  transition: background 0.1s;
+}
+.btn:hover { background: #f5f5f5; }
+.btn-primary { background: #4a90e2; color: #fff; border-color: #3a7bd5; }
+.btn-primary:hover { background: #3a7bd5; }
+
+#save-status {
+  font-size: 12px;
+  color: #aaa;
+  margin-left: 4px;
+}
+
+#canvas-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  cursor: default;
+}
+
+svg#map-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* node editor overlay */
+#node-editor {
+  position: absolute;
+  display: none;
+  border: 2px solid #4a90e2;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  background: #fff;
+  z-index: 100;
+  box-shadow: 0 2px 8px rgba(74,144,226,0.3);
+}
+
+#shortcuts {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.65);
+  color: #fff;
+  padding: 7px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  display: flex;
+  gap: 14px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#shortcuts b { color: #90cdf4; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>MindMap</h1>
+  <button class="btn btn-primary" onclick="newMap()">New</button>
+  <button class="btn" onclick="exportMap()">Export JSON</button>
+  <button class="btn" onclick="document.getElementById('import-input').click()">Import JSON</button>
+  <input id="import-input" type="file" accept=".json" style="display:none" onchange="importMap(event)">
+  <span id="save-status">Saved</span>
+</div>
+
+<div id="canvas-container">
+  <svg id="map-svg" tabindex="0">
+    <defs>
+      <filter id="sel-shadow" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#4a90e2" flood-opacity="0.5"/>
+      </filter>
+      <filter id="node-shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.12"/>
+      </filter>
+    </defs>
+    <g id="viewport">
+      <g id="links"></g>
+      <g id="nodes"></g>
+    </g>
+  </svg>
+  <input id="node-editor" type="text" autocomplete="off" spellcheck="false">
+</div>
+
+<div id="shortcuts">
+  <span><b>Tab</b> child</span>
+  <span><b>Enter</b> sibling</span>
+  <span><b>Del</b> delete</span>
+  <span><b>Space / F2</b> edit</span>
+  <span><b>↑↓←→</b> navigate</span>
+  <span><b>Ctrl+↑↓</b> reorder</span>
+  <span><b>/</b> collapse</span>
+  <span><b>Ctrl+Z/Y</b> undo/redo</span>
+</div>
+
+<script>
+// ─── Constants ────────────────────────────────────────────────────────────────
+const NW = 140;   // node width
+const NH = 36;    // node height
+const HS = 190;   // horizontal step between levels
+const VG = 14;    // vertical gap between siblings
+
+const PALETTE = [
+  '#4a90e2','#e05d5d','#48bb78','#ed8936',
+  '#9f7aea','#38b2ac','#f6ad55','#667eea'
+];
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let map, selectedId, editingId, undoStack, redoStack, nextId;
+let panX, panY, scale;
+let isPanning = false, panAnchor = null;
+let rootColors = {}; // node id → color index for depth-1 nodes
+
+// ─── Tree helpers ─────────────────────────────────────────────────────────────
+function findNode(id, node = map) {
+  if (node.id === id) return node;
+  for (const c of node.children) {
+    const f = findNode(id, c);
+    if (f) return f;
+  }
+  return null;
+}
+
+function findParent(targetId, node = map) {
+  for (const c of node.children) {
+    if (c.id === targetId) return node;
+    const f = findParent(targetId, c);
+    if (f) return f;
+  }
+  return null;
+}
+
+function siblingIndex(parent, id) {
+  return parent.children.findIndex(c => c.id === id);
+}
+
+function genId() {
+  return 'n' + (++nextId) + '_' + Date.now();
+}
+
+// Returns the depth-1 ancestor id (color group)
+function colorOf(id) {
+  if (id === 'root') return 0;
+  // walk up until we find depth-1 node
+  let cur = id;
+  while (true) {
+    const p = findParent(cur);
+    if (!p) return 0;
+    if (p.id === 'root') break;
+    cur = p.id;
+  }
+  // cur is now depth-1 node id
+  const idx = map.children.findIndex(c => c.id === cur);
+  return idx >= 0 ? idx : 0;
+}
+
+// ─── Layout ───────────────────────────────────────────────────────────────────
+function subtreeH(node) {
+  if (!node.children.length || node.collapsed) {
+    node._sh = NH + VG;
+    return node._sh;
+  }
+  let total = 0;
+  for (const c of node.children) total += subtreeH(c);
+  node._sh = Math.max(total, NH + VG);
+  return node._sh;
+}
+
+function placeNodes(node, x, topY, depth = 0) {
+  node._depth = depth;
+  node._x = x;
+  if (!node.children.length || node.collapsed) {
+    node._y = topY + (node._sh - NH) / 2;
+    return;
+  }
+  let cy = topY;
+  for (const c of node.children) {
+    placeNodes(c, x + HS, cy, depth + 1);
+    cy += c._sh;
+  }
+  const first = node.children[0]._y;
+  const last = node.children[node.children.length - 1]._y;
+  node._y = (first + last + NH) / 2 - NH / 2;
+}
+
+function layout() {
+  subtreeH(map);
+  placeNodes(map, 0, -map._sh / 2 + (NH + VG) / 2);
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────────
+const svg    = document.getElementById('map-svg');
+const vp     = document.getElementById('viewport');
+const linksG = document.getElementById('links');
+const nodesG = document.getElementById('nodes');
+const editor = document.getElementById('node-editor');
+
+function applyViewport() {
+  vp.setAttribute('transform', `translate(${panX},${panY}) scale(${scale})`);
+}
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+function truncate(text, maxPx = NW - 20, fontSize = 14) {
+  // rough estimate: avg char ≈ fontSize * 0.55
+  const avgW = fontSize * 0.55;
+  const max = Math.floor(maxPx / avgW);
+  return text.length <= max ? text : text.slice(0, max - 1) + '…';
+}
+
+function buildNodeEl(node) {
+  const sel = node.id === selectedId;
+  const color = PALETTE[colorOf(node.id) % PALETTE.length];
+  const isRoot = node._depth === 0;
+
+  const g = svgEl('g', { class: 'node', 'data-id': node.id,
+    transform: `translate(${node._x},${node._y})` });
+
+  const rect = svgEl('rect', {
+    width: NW, height: NH, rx: 7, ry: 7,
+    fill: isRoot ? color : '#fff',
+    stroke: sel ? color : (isRoot ? color : '#d8d8d8'),
+    'stroke-width': sel ? 3 : 1.5,
+    filter: sel ? 'url(#sel-shadow)' : 'url(#node-shadow)',
+  });
+
+  const text = svgEl('text', {
+    x: NW / 2, y: NH / 2,
+    'dominant-baseline': 'middle',
+    'text-anchor': 'middle',
+    'font-size': 14,
+    fill: isRoot ? '#fff' : '#2d3748',
+    'font-weight': isRoot ? '600' : '400',
+  });
+  text.textContent = truncate(node.title);
+
+  g.appendChild(rect);
+  g.appendChild(text);
+
+  // Collapse toggle dot
+  if (node.children.length > 0) {
+    const dot = svgEl('circle', {
+      cx: NW, cy: NH / 2, r: 8,
+      fill: color, 'class': 'collapse-dot', style: 'cursor:pointer',
+    });
+    const dotTxt = svgEl('text', {
+      x: NW, y: NH / 2,
+      'dominant-baseline': 'middle', 'text-anchor': 'middle',
+      'font-size': 11, fill: '#fff',
+      style: 'pointer-events:none; user-select:none',
+    });
+    dotTxt.textContent = node.collapsed ? '+' : '−';
+    g.appendChild(dot);
+    g.appendChild(dotTxt);
+  }
+
+  // Events
+  rect.addEventListener('click', e => { e.stopPropagation(); selectNode(node.id); });
+  text.addEventListener('click', e => { e.stopPropagation(); selectNode(node.id); });
+  rect.addEventListener('dblclick', e => { e.stopPropagation(); startEdit(node.id); });
+  text.addEventListener('dblclick', e => { e.stopPropagation(); startEdit(node.id); });
+  g.querySelectorAll('.collapse-dot').forEach(dot =>
+    dot.addEventListener('click', e => { e.stopPropagation(); toggleCollapse(node.id); }));
+
+  return g;
+}
+
+function bezier(n1, n2) {
+  const x1 = n1._x + NW, y1 = n1._y + NH / 2;
+  const x2 = n2._x,       y2 = n2._y + NH / 2;
+  const mx = (x1 + x2) / 2;
+  return `M ${x1} ${y1} C ${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`;
+}
+
+function render() {
+  linksG.innerHTML = '';
+  nodesG.innerHTML = '';
+
+  function traverse(node) {
+    nodesG.appendChild(buildNodeEl(node));
+    if (!node.collapsed) {
+      for (const c of node.children) {
+        const path = svgEl('path', {
+          d: bezier(node, c),
+          fill: 'none',
+          stroke: PALETTE[colorOf(c.id) % PALETTE.length],
+          'stroke-width': 2.5,
+          opacity: 0.4,
+        });
+        linksG.appendChild(path);
+        traverse(c);
+      }
+    }
+  }
+
+  traverse(map);
+  applyViewport();
+  if (editingId) repositionEditor(editingId);
+}
+
+// ─── Selection & Editing ──────────────────────────────────────────────────────
+function selectNode(id) {
+  stopEdit(false);
+  selectedId = id;
+  render();
+  svg.focus();
+}
+
+function startEdit(id) {
+  editingId = id;
+  const node = findNode(id);
+  editor.value = node.title;
+  editor.style.display = 'block';
+  repositionEditor(id);
+  editor.focus();
+  editor.select();
+}
+
+function repositionEditor(id) {
+  const node = findNode(id);
+  if (!node) return;
+  const svgRect = svg.getBoundingClientRect();
+  editor.style.left   = (node._x * scale + panX + svgRect.left) + 'px';
+  editor.style.top    = (node._y * scale + panY + svgRect.top)  + 'px';
+  editor.style.width  = (NW * scale) + 'px';
+  editor.style.height = (NH * scale) + 'px';
+  editor.style.fontSize = Math.max(10, 14 * scale) + 'px';
+}
+
+function stopEdit(save = true) {
+  if (!editingId) return;
+  if (save && editor.value.trim()) {
+    pushUndo();
+    const node = findNode(editingId);
+    if (node) node.title = editor.value.trim();
+    autosave();
+  }
+  editingId = null;
+  editor.style.display = 'none';
+  render();
+}
+
+editor.addEventListener('keydown', e => {
+  if (e.key === 'Enter')  { e.preventDefault(); stopEdit(true); }
+  if (e.key === 'Escape') { e.preventDefault(); stopEdit(false); }
+  e.stopPropagation();
+});
+editor.addEventListener('blur', () => stopEdit(true));
+
+// ─── Map Operations ───────────────────────────────────────────────────────────
+function pushUndo() {
+  undoStack.push(JSON.stringify({ map, selectedId, nextId }));
+  if (undoStack.length > 100) undoStack.shift();
+  redoStack = [];
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(JSON.stringify({ map, selectedId, nextId }));
+  restore(JSON.parse(undoStack.pop()));
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(JSON.stringify({ map, selectedId, nextId }));
+  restore(JSON.parse(redoStack.pop()));
+}
+
+function restore(state) {
+  map = state.map; selectedId = state.selectedId; nextId = state.nextId;
+  layout(); render(); autosave();
+}
+
+function addChild() {
+  if (!selectedId) return;
+  pushUndo();
+  const parent = findNode(selectedId);
+  parent.collapsed = false;
+  const node = { id: genId(), title: 'New node', children: [], collapsed: false };
+  parent.children.push(node);
+  selectedId = node.id;
+  layout(); render(); autosave();
+  startEdit(node.id);
+}
+
+function addSibling() {
+  if (!selectedId || selectedId === 'root') { addChild(); return; }
+  const parent = findParent(selectedId);
+  if (!parent) return;
+  pushUndo();
+  const idx = siblingIndex(parent, selectedId);
+  const node = { id: genId(), title: 'New node', children: [], collapsed: false };
+  parent.children.splice(idx + 1, 0, node);
+  selectedId = node.id;
+  layout(); render(); autosave();
+  startEdit(node.id);
+}
+
+function deleteNode() {
+  if (!selectedId || selectedId === 'root') return;
+  const parent = findParent(selectedId);
+  if (!parent) return;
+  pushUndo();
+  const idx = siblingIndex(parent, selectedId);
+  parent.children.splice(idx, 1);
+  selectedId = parent.children.length
+    ? parent.children[Math.max(0, idx - 1)].id
+    : parent.id;
+  layout(); render(); autosave();
+}
+
+function toggleCollapse(id) {
+  const node = findNode(id || selectedId);
+  if (!node || !node.children.length) return;
+  pushUndo();
+  node.collapsed = !node.collapsed;
+  layout(); render(); autosave();
+}
+
+function moveUp() {
+  if (!selectedId || selectedId === 'root') return;
+  const parent = findParent(selectedId);
+  const idx = siblingIndex(parent, selectedId);
+  if (idx <= 0) return;
+  pushUndo();
+  [parent.children[idx], parent.children[idx-1]] = [parent.children[idx-1], parent.children[idx]];
+  layout(); render(); autosave();
+}
+
+function moveDown() {
+  if (!selectedId || selectedId === 'root') return;
+  const parent = findParent(selectedId);
+  const idx = siblingIndex(parent, selectedId);
+  if (idx >= parent.children.length - 1) return;
+  pushUndo();
+  [parent.children[idx], parent.children[idx+1]] = [parent.children[idx+1], parent.children[idx]];
+  layout(); render(); autosave();
+}
+
+function navUp() {
+  if (!selectedId) return;
+  const parent = findParent(selectedId);
+  if (!parent) return;
+  const idx = siblingIndex(parent, selectedId);
+  if (idx > 0) selectNode(parent.children[idx - 1].id);
+}
+
+function navDown() {
+  if (!selectedId) return;
+  const parent = findParent(selectedId);
+  if (!parent) return;
+  const idx = siblingIndex(parent, selectedId);
+  if (idx < parent.children.length - 1) selectNode(parent.children[idx + 1].id);
+}
+
+function navLeft() {
+  if (!selectedId || selectedId === 'root') return;
+  const parent = findParent(selectedId);
+  if (parent) selectNode(parent.id);
+}
+
+function navRight() {
+  const node = findNode(selectedId);
+  if (node && node.children.length && !node.collapsed) selectNode(node.children[0].id);
+}
+
+// ─── Keyboard ─────────────────────────────────────────────────────────────────
+svg.addEventListener('keydown', e => {
+  if (editingId) return;
+
+  const ctrl = e.ctrlKey || e.metaKey;
+
+  if (ctrl && e.key === 'z') { e.preventDefault(); undo(); return; }
+  if (ctrl && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) { e.preventDefault(); redo(); return; }
+  if (ctrl && e.key === 's') { e.preventDefault(); autosave(true); return; }
+
+  switch (e.key) {
+    case 'Tab':      e.preventDefault(); addChild(); break;
+    case 'Enter':    e.preventDefault(); addSibling(); break;
+    case 'Delete':
+    case 'Backspace':e.preventDefault(); deleteNode(); break;
+    case ' ':
+    case 'F2':       e.preventDefault(); if (selectedId) startEdit(selectedId); break;
+    case '/':        e.preventDefault(); toggleCollapse(); break;
+    case 'ArrowUp':
+      e.preventDefault();
+      ctrl ? moveUp() : navUp(); break;
+    case 'ArrowDown':
+      e.preventDefault();
+      ctrl ? moveDown() : navDown(); break;
+    case 'ArrowLeft': e.preventDefault(); navLeft(); break;
+    case 'ArrowRight':e.preventDefault(); navRight(); break;
+    default:
+      // Start editing on printable key
+      if (!ctrl && !e.altKey && e.key.length === 1 && selectedId) {
+        startEdit(selectedId);
+        editor.value = e.key;
+        editor.setSelectionRange(1, 1);
+      }
+  }
+});
+
+// ─── Pan & Zoom ───────────────────────────────────────────────────────────────
+const container = document.getElementById('canvas-container');
+
+container.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = svg.getBoundingClientRect();
+  const mx = e.clientX - r.left;
+  const my = e.clientY - r.top;
+  const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  panX = mx + (panX - mx) * factor;
+  panY = my + (panY - my) * factor;
+  scale = Math.max(0.15, Math.min(4, scale * factor));
+  applyViewport();
+  if (editingId) repositionEditor(editingId);
+}, { passive: false });
+
+svg.addEventListener('mousedown', e => {
+  if (e.target.closest('.node')) return;
+  isPanning = true;
+  panAnchor = { x: e.clientX, y: e.clientY, px: panX, py: panY };
+  svg.style.cursor = 'grabbing';
+});
+
+window.addEventListener('mousemove', e => {
+  if (!isPanning) return;
+  panX = panAnchor.px + (e.clientX - panAnchor.x);
+  panY = panAnchor.py + (e.clientY - panAnchor.y);
+  applyViewport();
+  if (editingId) repositionEditor(editingId);
+});
+
+window.addEventListener('mouseup', () => {
+  isPanning = false;
+  svg.style.cursor = 'default';
+});
+
+svg.addEventListener('click', e => {
+  if (!e.target.closest('.node')) {
+    stopEdit(false);
+    selectedId = null;
+    render();
+  }
+});
+
+// Reset view on double-click on empty space
+svg.addEventListener('dblclick', e => {
+  if (!e.target.closest('.node')) centerView();
+});
+
+// ─── Center View ──────────────────────────────────────────────────────────────
+function centerView() {
+  const r = container.getBoundingClientRect();
+  scale = 1;
+  // root node is at (map._x, map._y); put it at 1/4 from left, vertically centered
+  panX = r.width * 0.25 - map._x - NW / 2;
+  panY = r.height / 2 - map._y - NH / 2;
+  applyViewport();
+}
+
+// ─── Storage ──────────────────────────────────────────────────────────────────
+const STORAGE_KEY = 'mindmap_v1';
+
+function autosave(explicit = false) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ map, nextId }));
+    const el = document.getElementById('save-status');
+    el.textContent = explicit ? 'Saved!' : 'Saved';
+    if (explicit) setTimeout(() => { el.textContent = 'Saved'; }, 1500);
+  } catch (e) {}
+}
+
+function loadStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    map = data.map;
+    nextId = data.nextId || 1;
+    return true;
+  } catch (e) { return false; }
+}
+
+// ─── Export / Import / New ────────────────────────────────────────────────────
+function exportMap() {
+  stopEdit(true);
+  const data = JSON.stringify({ map, nextId }, null, 2);
+  const url = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = (map.title || 'mindmap') + '.json';
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function importMap(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.map || !data.map.id) throw new Error('bad format');
+      pushUndo();
+      map = data.map; nextId = data.nextId || 1;
+      selectedId = 'root';
+      layout(); render(); centerView(); autosave();
+    } catch { alert('Invalid JSON file — must be a MindMap export.'); }
+  };
+  reader.readAsText(file);
+  event.target.value = '';
+}
+
+function newMap() {
+  if (!confirm('Start a new map? Your current map is already saved in the browser.')) return;
+  map = defaultMap();
+  nextId = 10;
+  selectedId = 'root';
+  undoStack = []; redoStack = [];
+  layout(); render(); centerView(); autosave();
+}
+
+function defaultMap() {
+  return {
+    id: 'root', title: 'Central Idea', collapsed: false,
+    children: [
+      { id: 'n1', title: 'Topic 1', collapsed: false, children: [
+        { id: 'n3', title: 'Subtopic A', collapsed: false, children: [] },
+        { id: 'n4', title: 'Subtopic B', collapsed: false, children: [] },
+      ]},
+      { id: 'n2', title: 'Topic 2', collapsed: false, children: [] },
+    ]
+  };
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+function init() {
+  undoStack = []; redoStack = [];
+  editingId = null;
+  scale = 1;
+
+  if (!loadStorage()) {
+    map = defaultMap();
+    nextId = 10;
+  }
+  selectedId = 'root';
+  layout();
+
+  // Wait for container to have dimensions
+  requestAnimationFrame(() => {
+    centerView();
+    render();
+    svg.focus();
+  });
+}
+
+init();
+</script>
+</body>
+</html>
