@@ -349,3 +349,362 @@ function render() {
   if (editingId) repositionEditor(editingId);
 }
 
+// ─── Selection & Editing ──────────────────────────────────────────────────────
+function selectNode(id) {
+  stopEdit(false);
+  selectedId = id;
+  render();
+  svg.focus();
+}
+
+function startEdit(id) {
+  editingId = id;
+  const node = findNode(id);
+  editor.value = node.title;
+  editor.style.display = 'block';
+  repositionEditor(id);
+  editor.focus();
+  editor.select();
+}
+
+function repositionEditor(id) {
+  const node = findNode(id);
+  if (!node) return;
+  const svgRect = svg.getBoundingClientRect();
+  editor.style.left   = (node._x * scale + panX + svgRect.left) + 'px';
+  editor.style.top    = (node._y * scale + panY + svgRect.top)  + 'px';
+  editor.style.width  = (NW * scale) + 'px';
+  editor.style.height = (NH * scale) + 'px';
+  editor.style.fontSize = Math.max(10, 14 * scale) + 'px';
+}
+
+function stopEdit(save = true) {
+  if (!editingId) return;
+  if (save && editor.value.trim()) {
+    pushUndo();
+    const node = findNode(editingId);
+    if (node) node.title = editor.value.trim();
+    autosave();
+  }
+  editingId = null;
+  editor.style.display = 'none';
+  render();
+}
+
+editor.addEventListener('keydown', e => {
+  if (e.key === 'Enter')  { e.preventDefault(); stopEdit(true); }
+  if (e.key === 'Escape') { e.preventDefault(); stopEdit(false); }
+  e.stopPropagation();
+});
+editor.addEventListener('blur', () => stopEdit(true));
+
+// ─── Map Operations ───────────────────────────────────────────────────────────
+function pushUndo() {
+  undoStack.push(JSON.stringify({ map, selectedId, nextId }));
+  if (undoStack.length > 100) undoStack.shift();
+  redoStack = [];
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(JSON.stringify({ map, selectedId, nextId }));
+  restore(JSON.parse(undoStack.pop()));
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(JSON.stringify({ map, selectedId, nextId }));
+  restore(JSON.parse(redoStack.pop()));
+}
+
+function restore(state) {
+  map = state.map; selectedId = state.selectedId; nextId = state.nextId;
+  layout(); render(); autosave();
+}
+
+function addChild() {
+  if (!selectedId) return;
+  pushUndo();
+  const parent = findNode(selectedId);
+  parent.collapsed = false;
+  const node = { id: genId(), title: 'New node', children: [], collapsed: false };
+  parent.children.push(node);
+  selectedId = node.id;
+  layout(); render(); autosave();
+  startEdit(node.id);
+}
+
+function addSibling() {
+  if (!selectedId || selectedId === 'root') { addChild(); return; }
+  const parent = findParent(selectedId);
+  if (!parent) return;
+  pushUndo();
+  const idx = siblingIndex(parent, selectedId);
+  const node = { id: genId(), title: 'New node', children: [], collapsed: false };
+  parent.children.splice(idx + 1, 0, node);
+  selectedId = node.id;
+  layout(); render(); autosave();
+  startEdit(node.id);
+}
+
+function deleteNode() {
+  if (!selectedId || selectedId === 'root') return;
+  const parent = findParent(selectedId);
+  if (!parent) return;
+  pushUndo();
+  const idx = siblingIndex(parent, selectedId);
+  parent.children.splice(idx, 1);
+  selectedId = parent.children.length
+    ? parent.children[Math.max(0, idx - 1)].id
+    : parent.id;
+  layout(); render(); autosave();
+}
+
+function toggleCollapse(id) {
+  const node = findNode(id || selectedId);
+  if (!node || !node.children.length) return;
+  pushUndo();
+  node.collapsed = !node.collapsed;
+  layout(); render(); autosave();
+}
+
+function moveUp() {
+  if (!selectedId || selectedId === 'root') return;
+  const parent = findParent(selectedId);
+  const idx = siblingIndex(parent, selectedId);
+  if (idx <= 0) return;
+  pushUndo();
+  [parent.children[idx], parent.children[idx-1]] = [parent.children[idx-1], parent.children[idx]];
+  layout(); render(); autosave();
+}
+
+function moveDown() {
+  if (!selectedId || selectedId === 'root') return;
+  const parent = findParent(selectedId);
+  const idx = siblingIndex(parent, selectedId);
+  if (idx >= parent.children.length - 1) return;
+  pushUndo();
+  [parent.children[idx], parent.children[idx+1]] = [parent.children[idx+1], parent.children[idx]];
+  layout(); render(); autosave();
+}
+
+function navUp() {
+  if (!selectedId) return;
+  const parent = findParent(selectedId);
+  if (!parent) return;
+  const idx = siblingIndex(parent, selectedId);
+  if (idx > 0) selectNode(parent.children[idx - 1].id);
+}
+
+function navDown() {
+  if (!selectedId) return;
+  const parent = findParent(selectedId);
+  if (!parent) return;
+  const idx = siblingIndex(parent, selectedId);
+  if (idx < parent.children.length - 1) selectNode(parent.children[idx + 1].id);
+}
+
+function navLeft() {
+  if (!selectedId || selectedId === 'root') return;
+  const parent = findParent(selectedId);
+  if (parent) selectNode(parent.id);
+}
+
+function navRight() {
+  const node = findNode(selectedId);
+  if (node && node.children.length && !node.collapsed) selectNode(node.children[0].id);
+}
+
+// ─── Keyboard ─────────────────────────────────────────────────────────────────
+svg.addEventListener('keydown', e => {
+  if (editingId) return;
+
+  const ctrl = e.ctrlKey || e.metaKey;
+
+  if (ctrl && e.key === 'z') { e.preventDefault(); undo(); return; }
+  if (ctrl && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) { e.preventDefault(); redo(); return; }
+  if (ctrl && e.key === 's') { e.preventDefault(); autosave(true); return; }
+
+  switch (e.key) {
+    case 'Tab':      e.preventDefault(); addChild(); break;
+    case 'Enter':    e.preventDefault(); addSibling(); break;
+    case 'Delete':
+    case 'Backspace':e.preventDefault(); deleteNode(); break;
+    case ' ':
+    case 'F2':       e.preventDefault(); if (selectedId) startEdit(selectedId); break;
+    case '/':        e.preventDefault(); toggleCollapse(); break;
+    case 'ArrowUp':
+      e.preventDefault();
+      ctrl ? moveUp() : navUp(); break;
+    case 'ArrowDown':
+      e.preventDefault();
+      ctrl ? moveDown() : navDown(); break;
+    case 'ArrowLeft': e.preventDefault(); navLeft(); break;
+    case 'ArrowRight':e.preventDefault(); navRight(); break;
+    default:
+      // Start editing on printable key
+      if (!ctrl && !e.altKey && e.key.length === 1 && selectedId) {
+        startEdit(selectedId);
+        editor.value = e.key;
+        editor.setSelectionRange(1, 1);
+      }
+  }
+});
+
+// ─── Pan & Zoom ───────────────────────────────────────────────────────────────
+const container = document.getElementById('canvas-container');
+
+container.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = svg.getBoundingClientRect();
+  const mx = e.clientX - r.left;
+  const my = e.clientY - r.top;
+  const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  panX = mx + (panX - mx) * factor;
+  panY = my + (panY - my) * factor;
+  scale = Math.max(0.15, Math.min(4, scale * factor));
+  applyViewport();
+  if (editingId) repositionEditor(editingId);
+}, { passive: false });
+
+svg.addEventListener('mousedown', e => {
+  if (e.target.closest('.node')) return;
+  isPanning = true;
+  panAnchor = { x: e.clientX, y: e.clientY, px: panX, py: panY };
+  svg.style.cursor = 'grabbing';
+});
+
+window.addEventListener('mousemove', e => {
+  if (!isPanning) return;
+  panX = panAnchor.px + (e.clientX - panAnchor.x);
+  panY = panAnchor.py + (e.clientY - panAnchor.y);
+  applyViewport();
+  if (editingId) repositionEditor(editingId);
+});
+
+window.addEventListener('mouseup', () => {
+  isPanning = false;
+  svg.style.cursor = 'default';
+});
+
+svg.addEventListener('click', e => {
+  if (!e.target.closest('.node')) {
+    stopEdit(false);
+    selectedId = null;
+    render();
+  }
+});
+
+// Reset view on double-click on empty space
+svg.addEventListener('dblclick', e => {
+  if (!e.target.closest('.node')) centerView();
+});
+
+// ─── Center View ──────────────────────────────────────────────────────────────
+function centerView() {
+  const r = container.getBoundingClientRect();
+  scale = 1;
+  // root node is at (map._x, map._y); put it at 1/4 from left, vertically centered
+  panX = r.width * 0.25 - map._x - NW / 2;
+  panY = r.height / 2 - map._y - NH / 2;
+  applyViewport();
+}
+
+// ─── Storage ──────────────────────────────────────────────────────────────────
+const STORAGE_KEY = 'mindmap_v1';
+
+function autosave(explicit = false) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ map, nextId }));
+    const el = document.getElementById('save-status');
+    el.textContent = explicit ? 'Saved!' : 'Saved';
+    if (explicit) setTimeout(() => { el.textContent = 'Saved'; }, 1500);
+  } catch (e) {}
+}
+
+function loadStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    map = data.map;
+    nextId = data.nextId || 1;
+    return true;
+  } catch (e) { return false; }
+}
+
+// ─── Export / Import / New ────────────────────────────────────────────────────
+function exportMap() {
+  stopEdit(true);
+  const data = JSON.stringify({ map, nextId }, null, 2);
+  const url = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = (map.title || 'mindmap') + '.json';
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function importMap(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.map || !data.map.id) throw new Error('bad format');
+      pushUndo();
+      map = data.map; nextId = data.nextId || 1;
+      selectedId = 'root';
+      layout(); render(); centerView(); autosave();
+    } catch { alert('Invalid JSON file — must be a MindMap export.'); }
+  };
+  reader.readAsText(file);
+  event.target.value = '';
+}
+
+function newMap() {
+  if (!confirm('Start a new map? Your current map is already saved in the browser.')) return;
+  map = defaultMap();
+  nextId = 10;
+  selectedId = 'root';
+  undoStack = []; redoStack = [];
+  layout(); render(); centerView(); autosave();
+}
+
+function defaultMap() {
+  return {
+    id: 'root', title: 'Central Idea', collapsed: false,
+    children: [
+      { id: 'n1', title: 'Topic 1', collapsed: false, children: [
+        { id: 'n3', title: 'Subtopic A', collapsed: false, children: [] },
+        { id: 'n4', title: 'Subtopic B', collapsed: false, children: [] },
+      ]},
+      { id: 'n2', title: 'Topic 2', collapsed: false, children: [] },
+    ]
+  };
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+function init() {
+  undoStack = []; redoStack = [];
+  editingId = null;
+  scale = 1;
+
+  if (!loadStorage()) {
+    map = defaultMap();
+    nextId = 10;
+  }
+  selectedId = 'root';
+  layout();
+
+  // Wait for container to have dimensions
+  requestAnimationFrame(() => {
+    centerView();
+    render();
+    svg.focus();
+  });
+}
+
+init();
+</script>
+</body>
+</html>
