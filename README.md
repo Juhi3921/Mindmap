@@ -14,6 +14,25 @@ Conceptualize your ideas, structure them as main and sub-topics, and manage your
  `Ctrl + S`              Save              
 
 
+Structure of Project
+MindMap/
+│
+├── index.html
+├── screenshot.png
+└── README.md
+
+LivE:
+YOUR_GITHUB_PAGES_LINK
+
+Improvements in Future
+
+There are some new features that I would like to add in future:
+
+Various themes and types of nodes
+Variable colors for each node
+Multiple formats for export
+Ability to search through the mind map.
+
 Inspiration
 
 There was this interesting idea in my head to come up with a simple mind-mapping tool that would help to quickly manage the thought process without any unnecessary complications, as well as utilize the technology for practicing various techniques of JavaScript, such as tree structures, events handling, keyboard operations, SVG elements, browser storage
