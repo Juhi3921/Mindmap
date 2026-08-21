@@ -17,8 +17,9 @@ body {
 }
 
 #toolbar {
-  background: #fff;
-  border-bottom: 1px solid #e0e0e0;
+ background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
   padding: 8px 16px;
   display: flex;
   align-items: center;
@@ -37,7 +38,7 @@ body {
 .btn {
   padding: 5px 12px;
   border: 1px solid #d0d0d0;
-  border-radius: 5px;
+  border-radius: 8px;
   background: #fff;
   cursor: pointer;
   font-size: 13px;
@@ -61,6 +62,13 @@ body {
   cursor: default;
 }
 
+#canvas-container {
+  cursor: grab;
+}
+
+#canvas-container:active {
+  cursor: grabbing;
+}
 svg#map-svg {
   width: 100%;
   height: 100%;
@@ -81,7 +89,13 @@ svg#map-svg {
   z-index: 100;
   box-shadow: 0 2px 8px rgba(74,144,226,0.3);
 }
+.node {
+  cursor: pointer;
+}
 
+.node:hover rect {
+  filter: url(#sel-shadow);
+}
 #shortcuts {
   position: absolute;
   bottom: 14px;
@@ -427,7 +441,7 @@ function addChild() {
   pushUndo();
   const parent = findNode(selectedId);
   parent.collapsed = false;
-  const node = { id: genId(), title: 'New node', children: [], collapsed: false };
+  const node = { id: genId(), title: 'Untitled idea', children: [], collapsed: false };
   parent.children.push(node);
   selectedId = node.id;
   layout(); render(); autosave();
@@ -440,7 +454,7 @@ function addSibling() {
   if (!parent) return;
   pushUndo();
   const idx = siblingIndex(parent, selectedId);
-  const node = { id: genId(), title: 'New node', children: [], collapsed: false };
+  const node = { id: genId(), title: 'Untitled idea', children: [], collapsed: false };
   parent.children.splice(idx + 1, 0, node);
   selectedId = node.id;
   layout(); render(); autosave();
