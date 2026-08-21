@@ -14,6 +14,12 @@ Create ideas, organize them into topics and subtopics, and navigate through your
 | `Ctrl + Y`             | Redo              |
 | `Ctrl + S`             | Save              |
 
+
+Inspiration
+
+I wanted to build a simple mind-mapping tool where I could quickly organize an idea without needing a complicated application.
+wanted to use this project to practice JavaScript concepts such as tree structures, event handling, keyboard interactions, SVG elements, browser storage...
+
 Technologies Used
 
 - HTML5
