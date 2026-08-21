@@ -1,24 +1,22 @@
 # mindmap
-Create ideas, organize them into topics and subtopics, and navigate through your mind map using keyboard shortcuts.
+Conceptualize your ideas, structure them as main and sub-topics, and manage your ideas and thoughts from your mindmap using shortcuts.
 
-| Key                    | Action            |
-| ---------------------- | ----------------- |
-| `Tab`                  | Add child node    |
-| `Enter`                | Add sibling node  |
-| `Delete` / `Backspace` | Delete node       |
-| `Space` / `F2`         | Edit node         |
-| `Arrow Keys`           | Navigate          |
-| `Ctrl + ↑ / ↓`         | Reorder node      |
-| `/`                    | Collapse / expand |
-| `Ctrl + Z`             | Undo              |
-| `Ctrl + Y`             | Redo              |
-| `Ctrl + S`             | Save              |
+ Key                     Action            
+ `Tab`                   Add child node    
+ `Enter`                 Add sibling node 
+ `Delete` / `Backspace`  Delete node       
+ `Space` / `F2`          Edit node         
+ `Arrow Keys`            Navigate          
+ `Ctrl + ↑ / ↓`          Reorder node      
+ `/`                     Collapse / expand 
+ `Ctrl + Z`              Undo              
+ `Ctrl + Y`              Redo              
+ `Ctrl + S`              Save              
 
 
 Inspiration
 
-I wanted to build a simple mind-mapping tool where I could quickly organize an idea without needing a complicated application.
-wanted to use this project to practice JavaScript concepts such as tree structures, event handling, keyboard interactions, SVG elements, browser storage...
+There was this interesting idea in my head to come up with a simple mind-mapping tool that would help to quickly manage the thought process without any unnecessary complications, as well as utilize the technology for practicing various techniques of JavaScript, such as tree structures, events handling, keyboard operations, SVG elements, browser storage
 
 Technologies Used
 
