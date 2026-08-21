@@ -22,7 +22,7 @@ MindMap/
 └── README.md
 
 LivE:
-YOUR_GITHUB_PAGES_LINK
+(https://juhi3921.github.io/Mindmap/)
 
 Improvements in Future
 
